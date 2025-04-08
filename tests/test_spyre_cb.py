@@ -23,9 +23,9 @@ def test_cb_handling(
     """Test that the spyre worker correctly handles batches of requests that
     finish after different numbers of forward passes"""
 
-    max_tokens1 = 10
-    max_tokens2 = 5
-    max_tokens3 = 7
+    max_tokens1 = 20
+    max_tokens2 = 17
+    max_tokens3 = 11
 
     sampling_params1 = SamplingParams(max_tokens=max_tokens1,
                                   temperature=0.0,
