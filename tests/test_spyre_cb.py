@@ -15,7 +15,7 @@ from vllm import SamplingParams
 
 
 @pytest.mark.parametrize("model", get_spyre_model_list())
-@pytest.mark.parametrize("backend", get_spyre_backend_list())
+@pytest.mark.parametrize("backend", ["eager", "inductor"])
 def test_cb_handling(
     model: str,
     backend: str,
