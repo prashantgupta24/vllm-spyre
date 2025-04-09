@@ -3,15 +3,13 @@
 Run `python -m pytest tests/test_spyre_cb.py`.
 """
 
+from vllm import EngineArgs, SamplingParams
 import pytest
 from spyre_util import (
-    compare_results,
-    generate_hf_output,
     generate_cb_spyre_vllm_output,
-    get_spyre_backend_list,
     get_spyre_model_list,
 )
-from vllm import SamplingParams
+from vllm.v1.engine.llm_engine import LLMEngine as V1LLMEngine
 
 
 @pytest.mark.parametrize("model", get_spyre_model_list())
@@ -48,11 +46,7 @@ def test_cb_handling(
         sampling_params3,
     ]
 
-    # Have the model count down to one and stop
-    # vllm_sampling_params = SamplingParams(
-    #     max_tokens=20, temperature=0, stop="1", logprobs=0
-    # )
-    # Importantly, these prompts are ordered so that they don't finish in the
+    # These prompts are ordered so that they don't finish in the
     # order given
     prompts = [
         "7 6 5 4",
@@ -73,8 +67,88 @@ def test_cb_handling(
         backend=backend,
     )
 
-    print(vllm_results)
-
     assert vllm_results[0]["text"] == " 3 2 "
     assert vllm_results[1]["text"] == " 6 5 4 3 2 "
     assert vllm_results[2]["text"] == " 4 3 2 "
+
+
+@pytest.mark.parametrize("model", get_spyre_model_list())
+@pytest.mark.parametrize("backend", ["eager", "inductor"])
+def test_cb_engine(model: str, backend: str, monkeypatch: pytest.MonkeyPatch):
+    """Test that the spyre worker correctly handles batches of requests that
+    finish after different numbers of forward passes"""
+    with monkeypatch.context() as m:
+        max_tokens1 = 20
+        max_tokens2 = 17
+
+        sampling_params1 = SamplingParams(max_tokens=max_tokens1,
+                                    temperature=0.0,
+                                    stop="1",
+                                    ignore_eos=True)
+
+        sampling_params2 = SamplingParams(max_tokens=max_tokens2,
+                                        temperature=0.0,
+                                        stop="1",
+                                        ignore_eos=True)
+
+        prompt1 = "7 6 5 4"
+        prompt2 = "10 9 8 7"
+
+        # set env vars
+        m.setenv("VLLM_SPYRE_WARMUP_PROMPT_LENS", "64")
+        m.setenv("VLLM_SPYRE_WARMUP_NEW_TOKENS", str(max([max_tokens1, max_tokens2])))
+
+        m.setenv("VLLM_SPYRE_USE_CB", "1")
+        m.setenv("VLLM_USE_V1", "1")
+
+        m.setenv("VLLM_SPYRE_MAX_CONTEXT_LENGTH", "2048")
+        m.setenv("VLLM_SPYRE_MAX_BATCH_SIZE", str(2))
+        m.setenv("VLLM_SPYRE_DYNAMO_BACKEND", backend)
+
+        # start the engine
+        engine_args = EngineArgs(
+            model=model,
+            enforce_eager=True,  # reduce test time
+        )
+
+        engine = V1LLMEngine.from_engine_args(engine_args)
+        
+        # add first request
+        engine.add_request("0", prompt1, sampling_params1)  
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 1 # only 1 request
+        assert request_outputs[0].request_id == '0'
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 1  # still only 1 request
+        assert request_outputs[0].request_id == '0'
+
+        # add another request
+        engine.add_request("1", prompt2, sampling_params2)
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 1  # still only 1 request
+        assert request_outputs[0].request_id == '0'
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 1  # still only 1 request
+        assert request_outputs[0].request_id == '1' # req 1 is decoding
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 2  # both requests decoding now
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 2  # both requests decoding now
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 2  # both requests decoding now
+        assert request_outputs[0].finished # request 1 is done
+        assert request_outputs[0].outputs[0].text == " 3 2 "
+
+        request_outputs = engine.step()
+        assert len(request_outputs) == 1  # only req #2 is left
+        assert request_outputs[0].request_id == "1"  # req 1 is decoding
+
+def test_cb_seq_group():
+    pass
